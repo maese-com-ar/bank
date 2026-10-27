@@ -1,6 +1,18 @@
 name: Documentation checks
 
 "on":
+  workflow_dispatch:
+    inputs:
+      oracle_standard_checks:
+        description: Run only the reviewed unprivileged repository checks
+        type: choice
+        required: true
+        default: not-ready
+        options: [not-ready, contracts]
+      expected_sha:
+        description: Exact reviewed commit on the trusted branch
+        type: string
+        required: true
   push:
     branches: [main]
     paths:
@@ -17,6 +29,7 @@ permissions:
 
 jobs:
   documentation:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -34,3 +47,71 @@ jobs:
         run: python3 docs/regulatory-watch/tools/check_watch.py
       - name: Check regulatory coverage and checkpoint regressions
         run: python3 docs/regulatory-watch/tools/test_check_watch.py
+
+  oracle-standard-checks:
+    name: Reviewed unprivileged repository checks
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'maese-com-ar/bank' && github.repository_id == '1421392379' &&
+      github.repository_owner == 'maese-com-ar' &&
+      github.actor == 'andrescastiglia' && github.triggering_actor == 'andrescastiglia' &&
+      github.ref == 'refs/heads/ci/oracle-maese' &&
+      github.workflow_ref == 'maese-com-ar/bank/.github/workflows/docs.yml@refs/heads/ci/oracle-maese' &&
+      inputs.oracle_standard_checks == 'contracts' && inputs.expected_sha != '' && github.sha == inputs.expected_sha
+    runs-on: [self-hosted, Linux, ARM64, maese-standard-arm64-v1]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: oracle-maese-repository-checks
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+    env:
+      BASH_ENV: /dev/null
+      GIT_CONFIG_NOSYSTEM: '1'
+      GIT_CONFIG_GLOBAL: /dev/null
+    steps:
+      - name: Verify effective unprivileged runner before checkout
+        run: |
+          python3 -I -B - <<'PY'
+          import json, os, pathlib, platform, re, subprocess
+          assert os.environ['RUNNER_NAME'] == 'oracle-maese'
+          assert os.geteuid() != 0
+          assert subprocess.check_output(['id','-un'],text=True).strip() == 'ci-maese'
+          assert subprocess.check_output(['id','-Gn'],text=True).split() == ['ci-maese']
+          assert platform.machine() == 'aarch64'
+          assert re.fullmatch('[0-9a-f]{40}',os.environ['GITHUB_SHA'])
+          status = dict(line.split(':',1) for line in pathlib.Path('/proc/self/status').read_text().splitlines() if ':' in line)
+          assert status['NoNewPrivs'].strip() == '1'
+          assert int(status['CapEff'].strip(),16) == 0
+          group = next(line.split(':',2)[2] for line in pathlib.Path('/proc/self/cgroup').read_text().splitlines() if line.startswith('0::'))
+          assert group == '/oracleci.slice/oracle-ci-maese.service'
+          base = pathlib.Path('/sys/fs/cgroup') / group.lstrip('/')
+          for root in (base,base.parent):
+              quota,period = map(int,(root/'cpu.max').read_text().split())
+              assert quota == 2*period and int((root/'memory.max').read_text()) == 4*1024**3
+          workers = subprocess.run(['pgrep','-x','Runner.Worker'],capture_output=True,text=True)
+          assert workers.returncode == 0 and len(workers.stdout.splitlines()) == 1
+          print(json.dumps({'runner':'oracle-maese','scope':'unprivileged-repository-checks','cpus':2,'memoryGiB':4,'workers':1,'buildAuthorized':False,'deployAuthorized':False}))
+          PY
+      - name: Checkout exact reviewed commit into a fresh run path
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: oracle-bank-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+          fetch-depth: 0
+          submodules: false
+          lfs: false
+      - name: Verify immutable checkout and run existing repository checks
+        working-directory: ${{ github.workspace }}/oracle-bank-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          test "$(git -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 -I -B -c 'import yaml; from zoneinfo import ZoneInfo; assert yaml.__version__ == "6.0.3"; ZoneInfo("America/Buenos_Aires")'
+          python3 -I -B docs/functional/tools/build_catalog.py --check
+          python3 -I -B docs/review/tools/check_review.py
+          python3 -I -B docs/regulatory-watch/tools/check_watch.py
+          python3 -I -B docs/regulatory-watch/tools/test_check_watch.py
