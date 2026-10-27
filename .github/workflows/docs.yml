@@ -1,18 +1,7 @@
 name: Documentation checks
 
 "on":
-  workflow_dispatch:
-    inputs:
-      oracle_standard_checks:
-        description: Run only the reviewed unprivileged repository checks
-        type: choice
-        required: true
-        default: not-ready
-        options: [not-ready, contracts]
-      expected_sha:
-        description: Exact reviewed commit on the trusted branch
-        type: string
-        required: true
+  workflow_dispatch: {}
   push:
     branches: [main]
     paths:
@@ -29,7 +18,8 @@ permissions:
 
 jobs:
   documentation:
-    if: github.event_name != 'workflow_dispatch'
+    if: >-
+      github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
