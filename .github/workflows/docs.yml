@@ -103,6 +103,7 @@ jobs:
           ref: ${{ github.sha }}
           path: oracle-bank-${{ github.run_id }}-${{ github.run_attempt }}
           persist-credentials: false
+          set-safe-directory: false
           fetch-depth: 0
           submodules: false
           lfs: false
